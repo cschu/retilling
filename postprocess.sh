@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -e
 
 ml python/3.5
 source samtools-1.4
