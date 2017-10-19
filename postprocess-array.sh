@@ -33,7 +33,7 @@ tgt_fq2=$(dirname $src_fq2)/$(basename $src_fq2 .fq.gz).unmapped_iwgsc10.fq.gz
 
 if [[ (! -e $tgt_fq1) || (! -e $tgt_fq2) ]]; then
  echo "Extracting unmapped reads"
- samtools view $target | python3 /tgac/workarea/group-tg/projects/Kronos_retilling/extract_unmapped.py $src_fq1 $src_fq2
+ samtools view $target | python3 /tgac/workarea/group-tg/projects/Kronos_retilling/retilling/extract_unmapped.py $src_fq1 $src_fq2
  md5sum $tgt_fq1 > $tgt_fq1.md5sum
  md5sum $tgt_fq2 > $tgt_fq2.md5sum
 fi
