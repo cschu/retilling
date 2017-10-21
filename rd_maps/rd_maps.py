@@ -30,9 +30,10 @@ MULTICOV_ARRAY = 'source bedtools-2.26.0; bed=\$(head -n \$SLURM_ARRAY_TASK_ID {
 #BEDCOV = 'source bedtools-2.26.0; bedtools coverage -abam {} -b {} | cut -f 14 > {}; touch {};' 
 #COVMERGE = 'paste {} {}  | awk -v OFS=\'\\t\' -v mins={} \'{{ for(i = 3; i <= NF; i++) {{ if (\$i > 0) c++; }}; if (c >= mins) print \$0; }}\' > {}; touch {};'
 #VCFFILTER = 'gzip -dc {0} | grep \'^#\' | gzip > {1}; join -1 1 -2 1 -o 1.2,1.3,1.4,1.5,1.6,1.7,1.8,1.9,1.10,1.11 <(gzip -dc {0} | grep -v \'#\' | awk -v OFS=\'\\t\' \'{{ print \$1":"\$2,\$0; }}\' | sort -k1,1) <(awk -v OFS=\'\\t\' \'{{ print \$1":"\$2,\$0; }}\' | sort -k1,1) | tr " " "\\t" | cut -f 2- | gzip  >> {1}; touch {2};'
-VCFFILTER = 'gzip -dc {0} | grep \'^#\' | gzip > {1}; join -1 1 -2 1 -o 1.2,1.3,1.4,1.5,1.6,1.7,1.8,1.9,1.10,1.11 <(gzip -dc {0} | grep -v \'#\' | awk -v OFS=\'\\t\' \'{{ print \$1":"\$2,\$0; }}\' | sort -k1,1) <(awk -v OFS=\'\\t\' \'{{ print \$1":"\$2,\$0; }}\' {3} | sort -k1,1) | tr " " "\\t" | gzip  >> {1}; touch {2};'
+#VCFFILTER = 'gzip -dc {0} | grep \'^#\' | gzip > {1}; join -1 1 -2 1 -o 1.2,1.3,1.4,1.5,1.6,1.7,1.8,1.9,1.10,1.11 <(gzip -dc {0} | grep -v \'#\' | awk -v OFS=\'\\t\' \'{{ print \$1":"\$2,\$0; }}\' | sort -k1,1) <(awk -v OFS=\'\\t\' \'{{ print \$1":"\$2,\$0; }}\' {3} | sort -k1,1) | tr " " "\\t" | gzip  >> {1}; touch {2};'
+VCFFILTER = 'gzip -dc {0} | grep \'^#\' | gzip > {1}; gzip -dc {0} | grep -v \'#\' | awk -F\'\\t\' \'NR==FNR{{c[\$1\$3]++;next}};c[\$1\$2] > 0\' {3} - | gzip >> {1}; touch {2};'
 
-HHFILTER = 'gzip -dc {} | awk -v OFS=\'\\t\' \'{{ split($10, data, ":"); split(data[2], ad, ","); if (data[0] == "0/1" && (ad[0] > 0 || ad[1] > 0)) {{ if ( ad[1] / (ad[0] + ad[1]) > 0.1999 && ad[1] >= 5) print $0; }} else if (data[0] == "1/1" && ad[1] >= 3) print $0; }}\' | gzip > {}; touch {};'
+HHFILTER = 'gzip -dc {} | awk -v OFS=\'\\t\' \'{{ split(\$10, data, \\":\\"); split(data[2], ad, \\",\\"); if (data[1] == \\"0/1\\" && (ad[1] > 0 || ad[2] > 0)) {{ if ( ad[2] / (ad[1] + ad[2]) > 0.1999 && ad[2] >= 5) print \$0; }} else if (data[1] == \\"1/1\\" && ad[2] >= 3) print \$0; }}\' | gzip > {}; touch {};'
 """
 
 """
@@ -98,6 +99,8 @@ if __name__ == '__main__':
     MULTICOV_DONE = os.path.join(workdir, 'multicov.done')
     MULTICOV_OUTPUT = os.path.join(workdir, 'mincov.bed')
     MULTICOV_INPUT = os.path.join(workdir, 'split_mbedfiles_in')
+    VCFFILTER_DONE = os.path.join(workdir, 'vcffilter.done')
+    HHFILTER_DONE = os.path.join(workdir, 'hhfilter.done')
 
     with open(sys.argv[1]) as vcf_in:
         directories = list(line.strip() for line in vcf_in)
@@ -115,11 +118,6 @@ if __name__ == '__main__':
             time.sleep(300)
 
 
-    ###
-    """
-SBATCH_ARRAY = 'sbatch -p {} --mem {} -c {} --wrap="{}" --array=1-{}'
-MULTICOV_ARRAY = 'source bedtools-2.26.0; bed=\$(head -n \$SLURM_ARRAY_TASK_ID {} | tail -n 1); bedtools multicov -q 1 -p -bams {} -bed \$bed | awk -v OFS=\'\\t\' -v mins={} \'{{ c=0; for(i = 4; i <= NF; i++) {{ if (\$i > 0) c++; }}; if (c >= mins) print \$0; }}\' > \$bed.mincov; touch \$bed.done;'
-    """
     if not os.path.exists(MULTICOV_DONE):
         mbedfiles = list(splitInputFile(VCFMERGE_OUTPUT))
         with open(MULTICOV_INPUT, 'w') as mbedfiles_f:
@@ -142,114 +140,54 @@ MULTICOV_ARRAY = 'source bedtools-2.26.0; bed=\$(head -n \$SLURM_ARRAY_TASK_ID {
         
         pr = sub.Popen(cmd, shell=True, stdin=sub.PIPE, stdout=sub.PIPE, stderr=sub.PIPE)
         out, err = pr.communicate()
-        # sys.exit(1)
 
-    """
-    donefiles = list()
-    mincovfiles = list()
-    for mbed in mbedfiles:
-        donefiles.append(mbed + '.mincov.done')
-        mincovfiles.append(mbed + '.mincov')
-        cmd = MULTICOV.format(' '.join(bamfiles), mbed, 24, mincovfiles[-1], donefiles[-1])
-        sbatch = SBATCH.format('ei-medium', '20GB', 1, cmd)
-        pr = sub.Popen(sbatch, stdout=sub.PIPE, stderr=sub.PIPE, stdin=sub.PIPE, shell=True)
-        err, out = pr.communicate()
-    tstart = time.time()   
-
-    while True:
-        donefiles = list(f for f in donefiles if not os.path.exists(f))
-        if not donefiles or time.time() - tstart > 24 * 3600:
-            break
-        time.sleep(300)
-
-    cmd = 'cat {} > {}; touch {};'.format(' '.join(mincovfiles), 'mincov.bed', 'multicov.done')
-    
-    pr = sub.Popen(cmd, shell=True, stdin=sub.PIPE, stdout=sub.PIPE, stderr=sub.PIPE)
-    out, err = pr.communicate()
-    """
-
-    """ this is still needed for scaffold-based calling """
-    """
-    if not os.path.exists('multicov.done'):
-        cmd = MULTICOV.format(' '.join(bamfiles), 'merged.bed', 24, 'mincov.bed', 'multicov.done')
-        sbatch = SBATCH.format('ei-medium', '20GB', 1, cmd)
-        pr = sub.Popen(sbatch, stdout=sub.PIPE, stderr=sub.PIPE, stdin=sub.PIPE, shell=True)
-        out, err = pr.communicate()
-        tstart = time.time()
-
-        while not os.path.exists('multicov.done') and time.time() - tstart < 24 * 3600:
-            time.sleep(300) 
-    """
-
-    """
-    donefiles = list()
-    covfiles = list()
-    for bf in bamfiles:
-        prefix = os.path.basename(bf)
-        donefiles.append(prefix + '.done')
-        covfiles.append(prefix + '.cov')
-        if os.path.exists('bedcov.done'):
-            continue
-        cmd = BEDCOV.format(bf, 'merged.bed', covfiles[-1], donefiles[-1])
-        sbatch = SBATCH.format('ei-medium', '8GB', 1, cmd)
-        pr = sub.Popen(sbatch, stdout=sub.PIPE, stderr=sub.PIPE, stdin=sub.PIPE, shell=True)
-        err, out = pr.communicate()
-    tstart = time.time()
-    
-    while True:
-        donefiles = list(f for f in donefiles if not os.path.exists(f))
-        if not donefiles or time.time() - tstart > 24 * 3600:
-            break
-        time.sleep(300)
-	
-    pr = sub.Popen('touch bedcov.done;', shell=True, stdin=sub.PIPE, stdout=sub.PIPE, stderr=sub.PIPE)
-    out, err = pr.communicate()
-
-    if not os.path.exists('covmerge.done'):
-        cmd = COVMERGE.format('merged.bed', ' '.join(covfiles), 24, 'mincov.bed', 'covmerge.done')
-        sbatch = SBATCH.format('ei-medium', '8GB', 1, cmd)
-        pr = sub.Popen(sbatch, stdout=sub.PIPE, stderr=sub.PIPE, stdin=sub.PIPE, shell=True)
-        out, err = pr.communicate()
-        tstart = time.time()
-
-        while not os.path.exists('covmerge.done') and time.time() - tstart < 24 * 3600:
-            time.sleep(300)
-    """
     """
 VCFFILTER = 'gzip -dc {0} | grep \'^#\' | gzip > {1}; join -1 1 -2 1 -o 1.2,1.3,1.4,1.5,1.6,1.7,1.8,1.9,1.10,1.11 <(gzip -dc {0} | grep -v \'#\' | awk -v OFS=\'\\t\' \'{{ print \$1":"\$2,\$0; }}\' | sort -k1,1) <(awk -v OFS=\'\\t\' \'{{ print \$1":"\$2,\$0; }}\' {3} | sort -k1,1) | tr " " "\\t" | gzip  >> {1}; touch {2};'
+
+VCFFILTER = 'gzip -dc {0} | grep \'^#\' | gzip > {1}; gzip -dc {0} | grep -v \'#\' | awk -F'\t' 'NR==FNR{c[\$1\$3]++;next};c[\$1\$2] > 0' {3} - | gzip >> {1}; touch {2};'
+< tmp2.tsv awk -F '\t' 'FNR==NR{ a[$1] = $2; next }{ print $1 FS a[$1] }' tmp1.tsv -
     """
-    if not os.path.exists('vcffilter.done'):
+    
+
+    if not os.path.exists(VCFFILTER_DONE):
         donefiles = list()
         fvcffiles = list()
         for vf in vcffiles:
-            prefix = os.path.basename(vf)
+            prefix = os.path.join(workdir, os.path.basename(vf))
             donefiles.append(prefix + '.done')
-            fvcffiles.append(prefix.replace('.vcf.gz', '.filtered.vcf.gz'))
+            fvcffiles.append(prefix.replace('.vcf.nod.gz', '.filtered.vcf.nod.gz'))
             cmd = VCFFILTER.format(vf, fvcffiles[-1], donefiles[-1], MULTICOV_OUTPUT)
             sbatch = SBATCH.format('ei-medium', '8GB', 1, cmd)
             pr = sub.Popen(sbatch, stdout=sub.PIPE, stderr=sub.PIPE, stdin=sub.PIPE, shell=True)
             out, err = pr.communicate()
         tstart = time.time()
-
+        print('FVCFFILES', fvcffiles)
+        
         while True:
             donefiles = list(f for f in donefiles if not os.path.exists(f))
             if not donefiles or time.time() - tstart > 24 * 3600:
                 break
             time.sleep(300)
 	
-        pr = sub.Popen('touch vcffilter.done;', shell=True, stdin=sub.PIPE, stdout=sub.PIPE, stderr=sub.PIPE)
+        pr = sub.Popen('touch {};'.format(VCFFILTER_DONE), shell=True, stdin=sub.PIPE, stdout=sub.PIPE, stderr=sub.PIPE)
         out, err = pr.communicate()
 
-    if not os.path.exists('hhfilter.done'):
+    else:
+        fvcffiles = list(os.path.join(workdir, os.path.basename(vf)).replace('.vcf.nod.gz', '.filtered.vcf.nod.gz') for vf in vcffiles) 
+        print('FVCFFILES', fvcffiles)
+
+    print(fvcffiles)
+    if not os.path.exists(HHFILTER_DONE):
         donefiles = list()
         hhfiles = list()
         for fvf in fvcffiles:
-            prefix = os.path.basename(fvf)
+            prefix = os.path.join(workdir, os.path.basename(fvf))
             donefiles.append(prefix + '.done')
-            hhfiles.append(prefix.replace('.vcf.gz', '.hh.vcf.gz'))
+            hhfiles.append(prefix.replace('.vcf.nod.gz', '.hh.vcf.nod.gz'))
             cmd = HHFILTER.format(fvf, hhfiles[-1], donefiles[-1])
             sbatch = SBATCH.format('ei-medium', '8GB', 1, cmd)
-            pr = sub.Popen(sbatch, stdout=sub.PIPE, stderr=sub.PIPE, stdin=sub.PIPE, shell=True)
+            print('HH-SBATCH:', sbatch)
+            pr = sub.Popen(sbatch, shell=True, stdout=sub.PIPE, stderr=sub.PIPE, stdin=sub.PIPE)
             out, err = pr.communicate()
         tstart = time.time()
         
@@ -259,7 +197,7 @@ VCFFILTER = 'gzip -dc {0} | grep \'^#\' | gzip > {1}; join -1 1 -2 1 -o 1.2,1.3,
                 break
             time.sleep(300)
 
-        pr = sub.Popen('touch hhfilter.done;', shell=True, stdin=sub.PIPE, stdout=sub.PIPE, stderr=sub.PIPE)
+        pr = sub.Popen('touch {};'.format(HHFILTER_DONE), shell=True, stdin=sub.PIPE, stdout=sub.PIPE, stderr=sub.PIPE)
         out, err = pr.communicate()
 """
 
