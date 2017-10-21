@@ -16,7 +16,7 @@ http://bedtools.readthedocs.io/en/latest/content/tools/coverage.html
 http://bedtools.readthedocs.io/en/latest/content/overview.html
 https://stackoverflow.com/questions/5466451/how-can-i-print-literal-curly-brace-characters-in-python-string-and-also-use-fo
 https://stackoverflow.com/questions/6997430/looping-over-input-fields-as-array
-
+https://stackoverflow.com/questions/32481877/what-is-nr-fnr-in-awk
 """
 
 SBATCH = 'sbatch -p {} --mem {} -c {} --wrap="{}"'
@@ -34,6 +34,9 @@ MULTICOV_ARRAY = 'source bedtools-2.26.0; bed=\$(head -n \$SLURM_ARRAY_TASK_ID {
 VCFFILTER = 'gzip -dc {0} | grep \'^#\' | gzip > {1}; gzip -dc {0} | grep -v \'#\' | awk -F\'\\t\' \'NR==FNR{{c[\$1\$3]++;next}};c[\$1\$2] > 0\' {3} - | gzip >> {1}; touch {2};'
 
 HHFILTER = 'gzip -dc {} | awk -v OFS=\'\\t\' \'{{ split(\$10, data, \\":\\"); split(data[2], ad, \\",\\"); if (data[1] == \\"0/1\\" && (ad[1] > 0 || ad[2] > 0)) {{ if ( ad[2] / (ad[1] + ad[2]) > 0.1999 && ad[2] >= 5) print \$0; }} else if (data[1] == \\"1/1\\" && ad[2] >= 3) print \$0; }}\' | gzip > {}; touch {};'
+
+DIFILTER = 'gzip -dc {} | awk -F\'\\t\' \'/^#/{{ print \$0; next; }}; NR==FNR{{c[\$1\$3]++; next; }}; c[\$1\$2] > 0\' {} - | awk -v OFS=\'\\t\' \'/^#/{{print \$0; next;}} {{ split(\$10, data, \\":\\"); split(data[2], ad, \\",\\"); if (data[1] == \\"0/1\\" && (ad[1] > 0 || ad[2] > 0)) {{ if ( ad[2] / (ad[1] + ad[2]) > 0.1999 && ad[2] >= 5) print \$0; }} else if (data[1] == \\"1/1\\" && ad[2] >= 3) print \$0; }}\' > {}; touch {};'
+
 """
 
 """
@@ -101,6 +104,7 @@ if __name__ == '__main__':
     MULTICOV_INPUT = os.path.join(workdir, 'split_mbedfiles_in')
     VCFFILTER_DONE = os.path.join(workdir, 'vcffilter.done')
     HHFILTER_DONE = os.path.join(workdir, 'hhfilter.done')
+    DIFILTER_DONE = os.path.join(workdir, 'difilter.done')
 
     with open(sys.argv[1]) as vcf_in:
         directories = list(line.strip() for line in vcf_in)
@@ -146,9 +150,41 @@ VCFFILTER = 'gzip -dc {0} | grep \'^#\' | gzip > {1}; join -1 1 -2 1 -o 1.2,1.3,
 
 VCFFILTER = 'gzip -dc {0} | grep \'^#\' | gzip > {1}; gzip -dc {0} | grep -v \'#\' | awk -F'\t' 'NR==FNR{c[\$1\$3]++;next};c[\$1\$2] > 0' {3} - | gzip >> {1}; touch {2};'
 < tmp2.tsv awk -F '\t' 'FNR==NR{ a[$1] = $2; next }{ print $1 FS a[$1] }' tmp1.tsv -
-    """
-    
 
+DIFILTER = 'gzip -dc {} | awk -F\'\\t\' \'/^#/{{ print \$0; next; }}; NR==FNR{{c[\$1\$3]++; next; }}; c[\$1\$2] > 0\' {} - | awk -v OFS=\'\\t\' \'/^#/{{print \$0; next;}} {{ split(\$10, data, \\":\\"); split(data[2], ad, \\",\\"); if (data[1] == \\"0/1\\" && (ad[1] > 0 || ad[2] > 0)) {{ if ( ad[2] / (ad[1] + ad[2]) > 0.1999 && ad[2] >= 5) print \$0; }} else if (data[1] == \\"1/1\\" && ad[2] >= 3) print \$0; }}\' > {}; touch {};'
+
+
+    """
+    if not os.path.exists(DIFILTER_DONE):
+        donefiles, fvcffiles = list(), list()
+        for vf in vcffiles:
+            prefix = os.path.join(workdir, os.path.basename(vf))
+            donefiles.append(prefix + '.done')
+            fvcffiles.append(prefix.replace('.vcf.nod.gz', '.filtered.vcf'))
+            cmd = DIFILTER.format(vf, MULTICOV_OUTPUT, fvcffiles[-1], donefiles[-1])
+            sbatch = SBATCH.format('ei-medium', '8GB', 1, cmd)
+            pr = sub.Popen(sbatch, stdout=sub.PIPE, stderr=sub.PIPE, stdin=sub.PIPE, shell=True)
+            out, err = pr.communicate()
+        tstart = time.time()
+        print('FVCFFILES', fvcffiles)
+        
+        while True:
+            donefiles = list(f for f in donefiles if not os.path.exists(f))
+            if not donefiles or time.time() - tstart > 24 * 3600:
+                break
+            time.sleep(300)
+	
+        pr = sub.Popen('touch {};'.format(DIFILTER_DONE), shell=True, stdin=sub.PIPE, stdout=sub.PIPE, stderr=sub.PIPE)
+        out, err = pr.communicate()
+
+    else:
+        fvcffiles = list(os.path.join(workdir, os.path.basename(vf)).replace('.vcf.nod.gz', '.filtered.vcf') for vf in vcffiles) 
+        print('FVCFFILES', fvcffiles)
+
+
+    sys.exit(1)
+
+    """
     if not os.path.exists(VCFFILTER_DONE):
         donefiles = list()
         fvcffiles = list()
@@ -199,6 +235,7 @@ VCFFILTER = 'gzip -dc {0} | grep \'^#\' | gzip > {1}; gzip -dc {0} | grep -v \'#
 
         pr = sub.Popen('touch {};'.format(HHFILTER_DONE), shell=True, stdin=sub.PIPE, stdout=sub.PIPE, stderr=sub.PIPE)
         out, err = pr.communicate()
+    """
 """
 
         
