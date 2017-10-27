@@ -25,7 +25,8 @@ SBATCH_ARRAY = 'sbatch -p {} --mem {} -c {} --wrap="{}" --array=1-{}'
 
 VCFMERGE = 'source vcftools-0.1.13; vcf-merge {} | grep -v \'#\' | cut -f 1,2 | awk -v OFS=\'\\t\' \'{{ print \$1,\$2-1,\$2; }}\' > {}; touch {};'
 MULTICOV_ARRAY = 'source bedtools-2.26.0; bed=\$(head -n \$SLURM_ARRAY_TASK_ID {} | tail -n 1); bedtools multicov -q 1 -p -bams {} -bed \$bed | awk -v OFS=\'\\t\' -v mins={} \'{{ c=0; for(i = 4; i <= NF; i++) {{ if (\$i > 0) c++; }}; if (c >= mins) print \$0; }}\' > \$bed.mincov; touch \$bed.done;'
-DIFILTER = 'source vcftools-0.1.13; gzip -dc {0} | awk -F\'\\t\' \'/^#/{{ print \$0; next; }}; NR==FNR{{c[\$1\$3]++; next; }}; c[\$1\$2] > 0\' {1} - | awk -v OFS=\'\\t\' \'/^#/{{print \$0; next;}} {{ split(\$10, data, \\":\\"); split(data[2], ad, \\",\\"); if (data[1] == \\"0/1\\" && (ad[1] > 0 || ad[2] > 0)) {{ if ( ad[2] / (ad[1] + ad[2]) > 0.1999 && ad[2] >= 5) print \$0; }} else if (data[1] == \\"1/1\\" && ad[2] >= 3) print \$0; }}\' | bgzip -c > {2} && tabix -p vcf {2}; touch {3};'
+#DIFILTER = 'source vcftools-0.1.13; gzip -dc {0} | awk -F\'\\t\' \'/^#/{{ print \$0; next; }}; NR==FNR{{c[\$1\$3]++; next; }}; c[\$1\$2] > 0\' {1} - | awk -v OFS=\'\\t\' \'/^#/{{print \$0; next;}} {{ split(\$10, data, \\":\\"); split(data[2], ad, \\",\\"); if (data[1] == \\"0/1\\" && (ad[1] > 0 || ad[2] > 0)) {{ if ( ad[2] / (ad[1] + ad[2]) > 0.1999 && ad[2] >= 5) print \$0; }} else if (data[1] == \\"1/1\\" && ad[2] >= 3) print \$0; }}\' | bgzip -c > {2} && tabix -p vcf {2}; touch {3};'
+DIFILTER = 'source vcftools-0.1.13; gzip -dc {0} | awk -F\'\\t\' \'/^#/{{ print \$0; next; }}; NR==FNR{{c[\$1\$3]++; next; }}; c[\$1\$2] > 0\' {1} - | awk -v OFS=\'\\t\' \'/^#/{{print \$0; next;}} {{ split(\$10, data, \\":\\"); split(data[2], ad, \\",\\"); if (data[1] == \\"0/1\\" && (ad[1] > 0 || ad[2] > 0)) {{ if ( ad[2] / (ad[1] + ad[2]) > 0.1999 && ad[2] >= {4}) print \$0; }} else if (data[1] == \\"1/1\\" && ad[2] >= {5}) print \$0; }}\' | bgzip -c > {2} && tabix -p vcf {2}; touch {3};'
 INTERSECT = 'source vcftools-0.1.13; vcf-isec -f -c {} {} > {}; touch {};'
 
 """
@@ -69,7 +70,7 @@ def slurmJob(cmd, sentinels, p='ei-medium', mem='8GB', c=1, arraylen=0, timelimi
         missing = list(sentinels)
         while True:
             missing = list(f for f in missing if not os.path.exists(f))
-            if not missing or time.time() - start > timelimit_s:
+            if not missing or time.time() - tstart > timelimit_s:
                 break
             time.sleep(wait_s)
     else:
@@ -85,7 +86,7 @@ def slurmMultiJob(cmds, sentinels, p='ei-medium', mem='8GB', c=1, timelimit_s=24
     missing = list(sentinels)
     while True:
         missing = list(f for f in missing if not os.path.exists(f))
-        if not missing or time.time() - start > timelimit_s:
+        if not missing or time.time() - tstart > timelimit_s:
             break
         time.sleep(wait_s)
 
@@ -95,17 +96,26 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--outdir', '-o', default='rd_maps_out')
     ap.add_argument('--force-overwrite', '-f', action='store_true')
+    ap.add_argument('--continue-previous', '-p', action='store_true')
     ap.add_argument('--verbose', '-v', action='store_true')
+    ap.add_argument('--min-libs', type=int, default=24)
+    ap.add_argument('--min-het', type=int, default=5)
+    ap.add_argument('--min-hom', type=int, default=3)
     ap.add_argument('sampledirs_file')
     args = ap.parse_args()
    
     print(args)
+    assert 0 < args.min_libs
+    assert 0 < args.min_het
+    assert 0 < args.min_hom
     assert os.path.exists(args.sampledirs_file)
-    assert not os.path.exists(args.outdir) or args.force_overwrite
-    if os.path.exists(args.outdir):
+    assert not os.path.exists(args.outdir) or args.force_overwrite or args.continue_previous
+    assert (args.force_overwrite and not args.continue_previous) or (not args.force_overwrite and args.continue_previous)
+    if os.path.exists(args.outdir) and not args.continue_previous:
         import shutil
         shutil.rmtree(args.outdir)
-    os.mkdir(args.outdir) 
+    if not os.path.exists(args.outdir):
+        os.mkdir(args.outdir) 
 
     workdir = args.outdir
     VCFMERGE_DONE = os.path.join(workdir, 'vcfmerge.done')
@@ -140,12 +150,17 @@ if __name__ == '__main__':
             print(*mbedfiles, sep='\n', file=mbedfiles_f)
         donefiles = list(f + '.done' for f in mbedfiles)
         mincovfiles = list(f + '.mincov' for f in mbedfiles)
-        cmd = MULTICOV_ARRAY.format(MULTICOV_INPUT, ' '.join(bamfiles), 24)
+        cmd = MULTICOV_ARRAY.format(MULTICOV_INPUT, ' '.join(bamfiles), args.min_libs)
         slurmJob(cmd, donefiles, arraylen=len(mbedfiles))
+        
+        with open(MULTICOV_DONE, 'w'):
+            pass
+    else:
+        mincovfiles = glob.glob(os.path.join(workdir, '*.mincov'))
     
-        cmd = 'cat {} > {}; touch {};'.format(' '.join(mincovfiles), MULTICOV_OUTPUT, MULTICOV_DONE)
-        pr = sub.Popen(cmd, shell=True, stdin=sub.PIPE, stdout=sub.PIPE, stderr=sub.PIPE)
-        out, err = pr.communicate()
+    cmd = 'cat {} > {};'.format(' '.join(mincovfiles), MULTICOV_OUTPUT)
+    pr = sub.Popen(cmd, shell=True, stdin=sub.PIPE, stdout=sub.PIPE, stderr=sub.PIPE)
+    out, err = pr.communicate()
 
     if not os.path.exists(DIFILTER_DONE):
         donefiles, fvcffiles, jobs = list(), list(), list()
@@ -153,7 +168,7 @@ if __name__ == '__main__':
             prefix = os.path.join(workdir, os.path.basename(vf))
             donefiles.append(prefix + '.done')
             fvcffiles.append(prefix.replace('.vcf.nod.gz', '.filtered.vcf.gz'))
-            cmd = DIFILTER.format(vf, MULTICOV_OUTPUT, fvcffiles[-1], donefiles[-1])
+            cmd = DIFILTER.format(vf, MULTICOV_OUTPUT, fvcffiles[-1], donefiles[-1], args.min_het, args.min_hom)
             jobs.append(cmd)
         slurmMultiJob(jobs, donefiles)
 
